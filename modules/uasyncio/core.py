@@ -3,8 +3,7 @@ try:
 except ImportError:
     import time
 import uheapq as heapq
-import logging
-
+import ulogging as logging
 
 DEBUG = 0
 
