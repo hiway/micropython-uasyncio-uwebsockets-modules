@@ -2,12 +2,9 @@
 Websockets protocol
 """
 
-import logging
-import ure as re
+import ulogging as logging
 import ustruct as struct
 import urandom as random
-import usocket as socket
-from _collections import namedtuple
 
 LOGGER = logging.getLogger(__name__)
 
@@ -31,46 +28,22 @@ CLOSE_MISSING_EXTN = const(1010)
 CLOSE_BAD_CONDITION = const(1011)
 
 
-URL_RE = re.compile(r'ws://([A-Za-z0-9\-\.]+)(?:\:([0-9]+))?(/.+)?')
-URI = namedtuple('URI', ('hostname', 'port', 'path'))
-
-def urlparse(uri):
-    """Parse ws:// URLs"""
-    match = URL_RE.match(uri)
-    if match:
-        return URI(match.group(1), int(match.group(2)), match.group(3))
-
-
 class Websocket:
-    """
-    Basis of the Websocket protocol.
-
-    This can probably be replaced with the C-based websocket module, but
-    this one currently supports more options.
-    """
     is_client = False
 
-    def __init__(self, sock):
-        self._sock = sock
+    def __init__(self, reader, writer):
+        self.reader = reader
+        self.writer = writer
         self.open = True
 
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        self.close()
-
-    def settimeout(self, timeout):
-        self._sock.settimeout(timeout)
-
-    def read_frame(self, max_size=None):
+    async def read_frame(self, max_size=None):
         """
         Read a frame from the socket.
         See https://tools.ietf.org/html/rfc6455#section-5.2 for the details.
         """
 
         # Frame header
-        byte1, byte2 = struct.unpack('!BB', self._sock.read(2))
+        byte1, byte2 = struct.unpack('!BB', await self.reader.read(2))
 
         # Byte 1: FIN(1) _(1) _(1) _(1) OPCODE(4)
         fin = bool(byte1 & 0x80)
@@ -81,20 +54,20 @@ class Websocket:
         length = byte2 & 0x7f
 
         if length == 126:  # Magic number, length header is 2 bytes
-            length, = struct.unpack('!H', self._sock.read(2))
+            length, = struct.unpack('!H', await self.reader.read(2))
         elif length == 127:  # Magic number, length header is 8 bytes
-            length, = struct.unpack('!Q', self._sock.read(8))
+            length, = struct.unpack('!Q', await self.reader.read(8))
 
         if mask:  # Mask is 4 bytes
-            mask_bits = self._sock.read(4)
+            mask_bits = await self.reader.read(4)
 
         try:
-            data = self._sock.read(length)
+            data = await self.reader.read(length)
         except MemoryError:
             # We can't receive this many bytes, close the socket
             if __debug__: LOGGER.debug("Frame of length %s too big. Closing",
                                        length)
-            self.close(code=CLOSE_TOO_BIG)
+            await self.close(code=CLOSE_TOO_BIG)
             return True, OP_CLOSE, None
 
         if mask:
@@ -103,7 +76,7 @@ class Websocket:
 
         return fin, opcode, data
 
-    def write_frame(self, opcode, data=b''):
+    async def write_frame(self, opcode, data=b''):
         """
         Write a frame to the socket.
         See https://tools.ietf.org/html/rfc6455#section-5.2 for the details.
@@ -123,29 +96,32 @@ class Websocket:
 
         if length < 126:  # 126 is magic value to use 2-byte length header
             byte2 |= length
-            self._sock.write(struct.pack('!BB', byte1, byte2))
+            await self.writer.awrite(struct.pack('!BB',
+                                                 byte1, byte2))
 
         elif length < (1 << 16):  # Length fits in 2-bytes
             byte2 |= 126  # Magic code
-            self._sock.write(struct.pack('!BBH', byte1, byte2, length))
+            await self.writer.awrite(struct.pack('!BBH',
+                                                 byte1, byte2, length))
 
         elif length < (1 << 64):
             byte2 |= 127  # Magic code
-            self._sock.write(struct.pack('!BBQ', byte1, byte2, length))
+            await self.writer.awrite(struct.pack('!BBQ',
+                                                 byte1, byte2, length))
 
         else:
             raise ValueError()
 
         if mask:  # Mask is 4 bytes
             mask_bits = struct.pack('!I', random.getrandbits(32))
-            self._sock.write(mask_bits)
+            await self.writer.awrite(mask_bits)
 
             data = bytes(b ^ mask_bits[i % 4]
                          for i, b in enumerate(data))
 
-        self._sock.write(data)
+        await self.writer.awrite(data)
 
-    def recv(self):
+    async def recv(self):
         """
         Receive data from the websocket.
 
@@ -157,12 +133,7 @@ class Websocket:
         assert self.open
 
         while self.open:
-            try:
-                fin, opcode, data = self.read_frame()
-            except ValueError:
-                LOGGER.debug("Failed to read frame. Socket dead.")
-                self._close()
-                return
+            fin, opcode, data = await self.read_frame()
 
             if not fin:
                 raise NotImplementedError()
@@ -172,7 +143,7 @@ class Websocket:
             elif opcode == OP_BYTES:
                 return data
             elif opcode == OP_CLOSE:
-                self._close()
+                await self._close()
                 return
             elif opcode == OP_PONG:
                 # Ignore this frame, keep waiting for a data frame
@@ -189,7 +160,7 @@ class Websocket:
             else:
                 raise ValueError(opcode)
 
-    def send(self, buf):
+    async def send(self, buf):
         """Send data to the websocket."""
 
         assert self.open
@@ -202,19 +173,21 @@ class Websocket:
         else:
             raise TypeError()
 
-        self.write_frame(opcode, buf)
+        await self.write_frame(opcode, buf)
 
-    def close(self, code=CLOSE_OK, reason=''):
+    async def close(self, code=CLOSE_OK, reason=''):
         """Close the websocket."""
         if not self.open:
             return
 
         buf = struct.pack('!H', code) + reason.encode('utf-8')
 
-        self.write_frame(OP_CLOSE, buf)
-        self._close()
+        await self.write_frame(OP_CLOSE, buf)
+        await self._close()
 
-    def _close(self):
+    async def _close(self):
         if __debug__: LOGGER.debug("Connection closed")
         self.open = False
-        self._sock.close()
+        # https://github.com/micropython/micropython-lib/issues/98
+        # await self.reader.aclose()
+        # await self.writer.aclose()
