@@ -87,16 +87,29 @@ class EventLoop:
 #                            self.add_reader(ret.obj.fileno(), lambda self, c, f: self.call_soon(c, f), self, cb, ret.obj)
 #                            self.add_reader(ret.obj.fileno(), lambda c, f: self.call_soon(c, f), cb, ret.obj)
 #                            self.add_reader(arg.fileno(), lambda cb: self.call_soon(cb), cb)
-                            self.add_reader(arg.fileno(), cb)
+                            try:
+                                self.add_reader(arg.fileno(), cb)
+                            except AttributeError:
+                                self.add_reader(arg, cb)
                             continue
                         elif isinstance(ret, IOWrite):
 #                            self.add_writer(arg.fileno(), lambda cb: self.call_soon(cb), cb)
-                            self.add_writer(arg.fileno(), cb)
+                            try:
+                                self.add_writer(arg.fileno(), cb)
+                            except AttributeError:
+                                self.add_writer(arg, cb)
                             continue
                         elif isinstance(ret, IOReadDone):
-                            self.remove_reader(arg.fileno())
+                            try:
+                                self.remove_reader(arg.fileno())
+                            except AttributeError:
+                                self.remove_reader(arg, cb)
                         elif isinstance(ret, IOWriteDone):
-                            self.remove_writer(arg.fileno())
+                            try:
+                                self.remove_writer(arg.fileno())
+                            except AttributeError:
+                                self.remove_writer(arg, cb)
+
                         elif isinstance(ret, StopLoop):
                             return arg
                     elif isinstance(ret, type_gen):

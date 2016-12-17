@@ -19,33 +19,51 @@ class EpollEventLoop(EventLoop):
             log.debug("add_reader%s", (fd, cb, args))
         if args:
             self.poller.register(fd, select.POLLIN)
-            self.objmap[fd] = (cb, args)
+            try:
+                self.objmap[fd] = (cb, args)
+            except TypeError:
+                self.objmap[id(fd)] = (cb, args)
         else:
             self.poller.register(fd, select.POLLIN)
-            self.objmap[fd] = cb
+            try:
+                self.objmap[fd] = cb
+            except TypeError:
+                self.objmap[id(fd)] = cb
 
     def remove_reader(self, fd):
         if __debug__:
             log.debug("remove_reader(%s)", fd)
         self.poller.unregister(fd)
-        del self.objmap[fd]
+        try:
+            del self.objmap[fd]
+        except TypeError:
+            del self.objmap[id(fd)]
 
     def add_writer(self, fd, cb, *args):
         if __debug__:
             log.debug("add_writer%s", (fd, cb, args))
         if args:
             self.poller.register(fd, select.POLLOUT)
-            self.objmap[fd] = (cb, args)
+            try:
+                self.objmap[fd] = (cb, args)
+            except TypeError:
+                self.objmap[id(fd)] = (cb, args)
         else:
             self.poller.register(fd, select.POLLOUT)
-            self.objmap[fd] = cb
+            try:
+                self.objmap[fd] = cb
+            except TypeError:
+                self.objmap[id(fd)] = cb
 
     def remove_writer(self, fd):
         if __debug__:
             log.debug("remove_writer(%s)", fd)
         try:
             self.poller.unregister(fd)
-            self.objmap.pop(fd, None)
+            try:
+                self.objmap.pop(fd, None)
+            except TypeError:
+                self.objmap.pop(id(fd), None)
         except OSError as e:
             # StreamWriter.awrite() first tries to write to an fd,
             # and if that succeeds, yield IOWrite may never be called
@@ -64,8 +82,11 @@ class EpollEventLoop(EventLoop):
             res = self.poller.poll(delay, 1)
         # log.debug("epoll result: %s", res)
         for fd, ev in res:
-            cb = self.objmap[fd]
-            if __debug__:
+            try:
+                cb = self.objmap[fd]
+            except TypeError:
+                cb = self.objmap[id(fd)]
+            if DEBUG:
                 log.debug("Calling IO callback: %r", cb)
             if isinstance(cb, tuple):
                 cb[0](*cb[1])
@@ -80,7 +101,7 @@ class StreamReader:
     def read(self, n=-1):
         yield IORead(self.s)
         while True:
-            res = self.s.read(n)
+            res = self.s.read(int(n))
             if res is not None:
                 break
             log.warn("Empty read")
@@ -114,6 +135,7 @@ class StreamReader:
 
 
 class StreamWriter:
+
     def __init__(self, s, extra):
         self.s = s
         self.extra = extra
@@ -170,7 +192,7 @@ def open_connection(host, port):
     try:
         s.connect(addr)
     except OSError as e:
-        if e.args[0] != errno.EINPROGRESS:
+        if e.args[0] not in [errno.EINPROGRESS, errno.ETIMEDOUT]:
             raise
     if __debug__:
         log.debug("open_connection: After connect")
