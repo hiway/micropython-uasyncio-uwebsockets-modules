@@ -1,11 +1,11 @@
+import errno
 import uselect as select
 import usocket as _socket
-
-import errno
-from uasyncio import queues
 from uasyncio.core import *
 
-Queue = queues.Queue
+from .queues import Queue
+
+Queue = Queue
 
 
 class EpollEventLoop(EventLoop):
